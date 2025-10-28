@@ -12,8 +12,7 @@ const CONSTANTS = {
     CHAT_CHECK_INTERVAL: 1000,
     VIDEO_CHECK_INTERVAL: 500,
     SKIP_THRESHOLD: 15,
-    PREVIOUS_MESSAGES_COUNT: 25,
-    MAX_CHAT_MESSAGES: 100
+    PREVIOUS_MESSAGES_COUNT: 25
 };
 
 // Global state
@@ -28,6 +27,11 @@ let config = null;
 let video = null;
 let lastSecond = -1;
 let isActive = false;
+let originalChatContent = null; // Store original YouTube chat
+let isManualLinkMode = false; // Manual link mode flag
+let pendingVideoId = null; // YouTube video ID waiting for manual link
+let chatHeader = null; // Header element for chat
+let isChatCollapsed = false; // Track chat collapse state
 
 /**
  * Browser API abstraction for cross-browser compatibility
@@ -157,35 +161,6 @@ function createChatMessage(msg) {
 // Variables already declared at top of file
 
 /**
- * Check if the chat is scrolled to the bottom
- * @returns {boolean} True if user is at the bottom of the chat
- */
-function isScrolledToBottom() {
-    if (!messageList) return false;
-    return Math.abs(messageList.scrollTop + messageList.clientHeight - messageList.scrollHeight) < 5;
-}
-
-/**
- * Remove oldest chat messages when limit is exceeded
- * Only removes if autoscroll is active (user is at bottom)
- */
-function limitChatMessages() {
-    if (!messageList || !config?.autoScroll) {
-        return;
-    }
-
-    // Only limit messages if user is scrolled to bottom (autoscroll active)
-    if (!isScrolledToBottom()) {
-        return;
-    }
-
-    const messages = messageList.children;
-    while (messages.length > CONSTANTS.MAX_CHAT_MESSAGES) {
-        messageList.removeChild(messages[0]);
-    }
-}
-
-/**
  * Display a chat message and handle auto-scrolling
  * @param {Object} comment - Comment data to display
  */
@@ -195,19 +170,188 @@ function showMessage(comment) {
         return;
     }
 
-    const wasAtBottom = isScrolledToBottom();
+    const isAtBottom = messageList.scrollTop == null ? false :
+        Math.abs(messageList.scrollTop + messageList.clientHeight - messageList.scrollHeight) < 5;
 
     shownMessages.add(comment);
     const messageElement = createChatMessage(comment);
     messageList.appendChild(messageElement);
 
-    // Limit messages if needed
-    limitChatMessages();
-
-    // Only auto-scroll if user was at bottom and autoscroll is enabled
-    if (wasAtBottom && config?.autoScroll) {
-        messageList.scrollTop = messageList.scrollHeight;
+    if (isAtBottom || config?.autoScroll !== false) {
+        scrollToBottom();
     }
+}
+
+/**
+ * Scroll the message list to the bottom
+ */
+function scrollToBottom() {
+    if (messageList) {
+        requestAnimationFrame(() => {
+            messageList.scrollTop = messageList.scrollHeight;
+        });
+    }
+}
+
+/**
+ * Check if the current video is a livestream
+ * @returns {boolean} True if video is a livestream
+ */
+function isLivestream() {
+    // Check if native YouTube chat exists (indicator of livestream)
+    const nativeChatExists = document.querySelector("#chat") !== null;
+    
+    // Check for live badge
+    const liveBadge = document.querySelector('.ytp-live-badge, .ytp-live');
+    
+    // Check video duration (live videos show "LIVE" instead of duration)
+    const durationElement = document.querySelector('.ytp-time-duration');
+    const isLiveDuration = durationElement && durationElement.textContent.trim() === '';
+    
+    return nativeChatExists || liveBadge !== null || isLiveDuration;
+}
+
+/**
+ * Toggle chat collapse state
+ */
+function toggleChatCollapse() {
+    isChatCollapsed = !isChatCollapsed;
+    
+    if (messageList) {
+        const chatContainer = messageList.parentNode;
+        
+            const chatContainerr = document.querySelector('#chat-container');
+        if (isChatCollapsed) {
+            chatContainerr.classList.add('lekker-chat-collapsed');
+            // Collapsing: measure current height, then transition to 0
+            const currentHeight = messageList.scrollHeight;
+            messageList.style.flex = 'none';
+            messageList.style.height = currentHeight + 'px';
+            messageList.style.transition = 'height 0.3s ease, opacity 0.3s ease';
+            messageList.style.overflow = 'hidden';
+            
+            // Set chat container to fixed height
+            if (chatContainer) {
+                chatContainer.style.height = '50px';
+                chatContainer.style.transition = 'height 0.3s ease';
+            }
+            
+            // Force reflow
+            messageList.offsetHeight;
+            
+            messageList.style.height = '0px';
+            messageList.style.opacity = '0';
+        } else {
+            
+            chatContainerr.classList.remove('lekker-chat-collapsed');
+            // Expanding: transition from 0 to calculated height
+            messageList.style.flex = 'none';
+            messageList.style.height = '0px';
+            messageList.style.opacity = '0';
+            messageList.style.overflow = 'hidden';
+            messageList.style.transition = 'height 0.3s ease, opacity 0.3s ease';
+            
+            // Restore chat container height
+            if (chatContainer) {
+                chatContainer.style.height = '100%';
+                chatContainer.style.transition = 'height 0.3s ease';
+            }
+            
+            // Force reflow
+            messageList.offsetHeight;
+            
+            // Calculate a reasonable height (use parent container height minus header)
+            const headerHeight = chatHeader ? chatHeader.offsetHeight : 0;
+            const availableHeight = chatContainer.clientHeight - headerHeight;
+            const targetHeight = Math.max(300, availableHeight); // At least 300px or available space
+            
+            messageList.style.height = targetHeight + 'px';
+            messageList.style.opacity = '1';
+            
+            // After transition completes, set to flex for responsive behavior
+            setTimeout(() => {
+                if (!isChatCollapsed && messageList) {
+                    messageList.style.flex = '1';
+                    messageList.style.height = 'auto';
+                    messageList.style.overflow = 'auto';
+                    messageList.style.overflowX = 'hidden';
+                }
+            }, 300);
+        }
+    }
+    
+    if (chatHeader) {
+        const toggleButton = chatHeader.querySelector('.lekker-chat-toggle');
+        if (toggleButton) {
+            toggleButton.textContent = isChatCollapsed ? '▼' : '▲';
+            toggleButton.setAttribute('aria-label', isChatCollapsed ? 'Expand chat' : 'Collapse chat');
+        }
+    }
+    
+    console.log(`Chat ${isChatCollapsed ? 'collapsed' : 'expanded'}`);
+}
+
+/**
+ * Create a header for the chat with collapse button
+ * @param {HTMLElement} chatContainer - The chat container element
+ */
+function createChatHeader(chatContainer) {
+    // Remove existing header if present
+    if (chatHeader && chatHeader.parentNode) {
+        chatHeader.remove();
+    }
+    
+    chatHeader = document.createElement('div');
+    chatHeader.className = 'lekker-chat-header';
+    chatHeader.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background-color: #18181b;
+        border-bottom: 1px solid #2d2d2d;
+        color: #efeff1;
+        font-family: 'Roobert', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+    `;
+    
+    const title = document.createElement('span');
+    title.textContent = 'Lekker Chat';
+    title.style.cssText = 'flex-grow: 1;';
+    
+    const toggleButton = document.createElement('button');
+    toggleButton.className = 'lekker-chat-toggle';
+    toggleButton.textContent = isChatCollapsed ? '▼' : '▲';
+    toggleButton.setAttribute('aria-label', isChatCollapsed ? 'Expand chat' : 'Collapse chat');
+    toggleButton.style.cssText = `
+        background: none;
+        border: none;
+        color: #efeff1;
+        cursor: pointer;
+        font-size: 16px;
+        padding: 4px 8px;
+        transition: background-color 0.2s;
+        border-radius: 4px;
+    `;
+    
+    toggleButton.addEventListener('mouseenter', () => {
+        toggleButton.style.backgroundColor = '#2d2d2d';
+    });
+    
+    toggleButton.addEventListener('mouseleave', () => {
+        toggleButton.style.backgroundColor = 'transparent';
+    });
+    
+    toggleButton.addEventListener('click', toggleChatCollapse);
+    
+    chatHeader.appendChild(title);
+    chatHeader.appendChild(toggleButton);
+    
+    // Insert header at the beginning of the chat container
+    chatContainer.insertBefore(chatHeader, chatContainer.firstChild);
+    
+    return chatHeader;
 }
 
 /**
@@ -220,25 +364,62 @@ function injectChat(chatContainer) {
         return;
     }
 
+    console.log('injectChat called with container:', chatContainer);
+
     try {
-        // Create our custom chat container with unique ID
-        const customChatContainer = document.createElement("div");
-        customChatContainer.id = "lekker-chat-container";
-
-        const customChat = document.createElement("div");
-        customChat.id = "lekker-chat";
-
-        messageList = document.createElement("ul");
-        messageList.className = "chat-message-list";
-
-        customChat.appendChild(messageList);
-        customChatContainer.appendChild(customChat);
-
-        // Clear the original container and add our custom one
-        chatContainer.innerHTML = "";
-        chatContainer.appendChild(customChatContainer);
-
-        console.log("Successfully injected Twitch chat interface!");
+        // Only clear and inject if we haven't already
+        if (!messageList || !messageList.parentNode) {
+            // Save original content before destroying it
+            originalChatContent = chatContainer.innerHTML;
+            
+            console.log('Creating new message list...');
+            chatContainer.innerHTML = "";
+            
+            // Determine if chat should start collapsed (non-livestream videos)
+            const isLive = isLivestream();
+            isChatCollapsed = !isLive; // Collapsed by default for VODs, expanded for live
+            console.log(`Video is ${isLive ? 'livestream' : 'VOD'}, chat ${isChatCollapsed ? 'collapsed' : 'expanded'} by default`);
+            
+            // Style the chat container to prevent extra space
+            chatContainer.style.cssText = `
+                display: flex;
+                flex-direction: column;
+                height: ${isChatCollapsed ? '50px' : '100%'};
+                overflow: hidden;
+                transition: height 0.3s ease;
+            `;
+            
+            // Create header first
+            createChatHeader(chatContainer);
+            
+            messageList = chatContainer.appendChild(document.createElement("ul"));
+            messageList.className = "chat-message-list";
+            
+            // Apply initial collapse state
+            if (isChatCollapsed) {
+                messageList.style.height = '0px';
+                messageList.style.opacity = '0';
+                messageList.style.overflow = 'hidden';
+                messageList.style.transition = 'height 0.3s ease, opacity 0.3s ease';
+            } else {
+                messageList.style.height = 'auto';
+                messageList.style.flex = '1';
+                messageList.style.transition = 'height 0.3s ease, opacity 0.3s ease';
+            }
+            
+            // Add a class to indicate our chat is active
+            const chatContainerParent = document.querySelector("#chat-container");
+            if (chatContainerParent) {
+                chatContainerParent.classList.add("lekker-chat-active");
+                console.log('Added lekker-chat-active class to container');
+            }
+            
+            console.log("Successfully injected Twitch chat interface!");
+        } else {
+            // Just clear existing messages
+            messageList.innerHTML = "";
+            console.log("Cleared existing Twitch chat interface");
+        }
     } catch (error) {
         console.error('Error injecting chat:', error);
     }
@@ -252,21 +433,110 @@ function waitForChatContainer() {
     return new Promise((resolve, reject) => {
         let attempts = 0;
         const maxAttempts = 30; // 30 seconds timeout
+        let containerCreated = false;
 
         const checkExist = setInterval(() => {
             attempts++;
-            const chatContainer = document.querySelector("#chat");
+            let chatContainer = document.querySelector("#chat");
+
+            // If no native chat container exists (non-live videos), create one
+            if (!chatContainer && !containerCreated) {
+                console.log('No native YouTube chat found - creating custom chat container');
+                chatContainer = createChatContainer();
+                containerCreated = true;
+                
+                if (!chatContainer) {
+                    console.error('Failed to create chat container');
+                }
+            }
 
             if (chatContainer) {
                 clearInterval(checkExist);
-                injectChat(chatContainer);
+                
+                // Inject if we have chat data loaded
+                if (chatData && chatData.comments && chatData.comments.length > 0) {
+                    injectChat(chatContainer);
+                    console.log('Chat injected successfully');
+                } else {
+                    console.log('Not injecting chat - no chat data available');
+                }
+                
                 resolve(chatContainer);
             } else if (attempts >= maxAttempts) {
                 clearInterval(checkExist);
+                console.error('Chat container creation failed or timed out');
                 reject(new Error('Chat container not found after 30 seconds'));
             }
         }, CONSTANTS.CHAT_CHECK_INTERVAL);
     });
+}
+
+/**
+ * Create a custom chat container for videos without native YouTube chat
+ */
+function createChatContainer() {
+    // Try multiple selectors for the secondary column (YouTube layout variations)
+    const secondary = document.querySelector("#secondary") || 
+                      document.querySelector("#secondary-inner") ||
+                      document.querySelector("ytd-watch-flexy #secondary");
+    
+    if (!secondary) {
+        console.error('Cannot find secondary column to inject chat');
+        console.log('Attempting to find any secondary element...');
+        
+        // Try to find the main video container and insert next to it
+        const primaryInner = document.querySelector("#primary-inner") || 
+                            document.querySelector("#primary");
+        
+        if (primaryInner && primaryInner.parentElement) {
+            console.log('Found primary container, will create secondary');
+            const newSecondary = document.createElement('div');
+            newSecondary.id = 'lekker-chat-secondary';
+            newSecondary.style.cssText = `
+                width: 400px;
+                margin-left: 24px;
+                flex-shrink: 0;
+            `;
+            primaryInner.parentElement.style.display = 'flex';
+            primaryInner.parentElement.appendChild(newSecondary);
+            return createChatInContainer(newSecondary);
+        }
+        
+        return null;
+    }
+
+    return createChatInContainer(secondary);
+}
+
+/**
+ * Create the actual chat elements in the given container
+ */
+function createChatInContainer(container) {
+    // Check if we already created a chat container
+    const existing = document.querySelector("#chat-container");
+    if (existing) {
+        const existingChat = existing.querySelector("#chat");
+        if (existingChat) {
+            console.log('Chat container already exists, reusing it');
+            return existingChat;
+        }
+    }
+
+    // Create chat container structure with same ID as YouTube's native chat
+    const chatContainer = document.createElement('div');
+    chatContainer.id = 'chat-container';
+    chatContainer.className = 'lekker-chat-active';
+
+    const chat = document.createElement('div');
+    chat.id = 'chat';
+
+    chatContainer.appendChild(chat);
+    
+    // Insert at the top of container
+    container.insertBefore(chatContainer, container.firstChild);
+    
+    console.log('Created custom chat container successfully');
+    return chat;
 }
 
 /**
@@ -423,13 +693,20 @@ async function onVideoReady() {
 async function initConfig() {
     try {
         const settings = await browserAPI.storage.local.get({
-            timeOffset: 900,
+            timeOffset: null,
             enableSync: true,
             autoScroll: true,
             environment: 'production'
         });
 
         config = settings;
+        
+        // If timeOffset is null/undefined, calculate smart default
+        if (config.timeOffset == null) {
+            config.timeOffset = calculateSmartDefaultOffset();
+            console.log('No stored offset, using smart default:', config.timeOffset);
+        }
+        
         console.log('Configuration loaded:', config);
     } catch (error) {
         console.error('Failed to load configuration:', error);
@@ -443,38 +720,53 @@ async function initConfig() {
 }
 
 /**
- * Calculate automatic time offset based on video length and last chat message
- * @param {number} videoDuration - Duration of the YouTube video in seconds
- * @param {Array} comments - Array of chat comments
+ * Calculate a smart default offset based on video duration and last chat message
  * @returns {number} Calculated offset in seconds
  */
-function calculateAutoOffset(videoDuration, comments) {
-    if (!videoDuration || !comments || comments.length === 0) {
-        return 362; // Default fallback
-    }
-
+function calculateSmartDefaultOffset() {
+    // Fallback to 900 if we can't calculate
+    let fallbackOffset = 900;
+    
     try {
-        // Find the last message's content offset
-        const lastMessage = comments[comments.length - 1];
-        const lastMessageOffset = lastMessage.content_offset_seconds;
-
-        // Calculate offset: video length - last message offset
-        const calculatedOffset = Math.round(videoDuration - lastMessageOffset);
-
-        console.log(`Auto-calculated offset: ${videoDuration}s (video) - ${lastMessageOffset}s (last message) = ${calculatedOffset}s`);
-
-        return calculatedOffset;
+        // Get video duration
+        const videoElement = document.querySelector('video');
+        const videoDuration = videoElement?.duration;
+        
+        // Get last chat message timestamp
+        const lastChatTimestamp = chatData?.comments?.length > 0 
+            ? chatData.comments[chatData.comments.length - 1].content_offset_seconds 
+            : null;
+        
+        if (videoDuration && lastChatTimestamp && videoDuration > 0 && lastChatTimestamp > 0) {
+            // Calculate offset: video duration - last chat message time
+            const calculatedOffset = Math.floor(videoDuration - lastChatTimestamp);
+            
+            // Sanity check: offset should be reasonable (between -3600 and 3600 seconds = 1 hour)
+            if (calculatedOffset >= -3600 && calculatedOffset <= 3600) {
+                console.log(`Smart offset calculated: ${calculatedOffset}s (Video: ${videoDuration}s, Last chat: ${lastChatTimestamp}s)`);
+                return calculatedOffset;
+            } else {
+                console.log(`Calculated offset ${calculatedOffset}s seems unreasonable, using fallback`);
+            }
+        }
     } catch (error) {
-        console.error('Error calculating auto offset:', error);
-        return 362; // Default fallback
+        console.error('Error calculating smart default offset:', error);
     }
+    
+    console.log(`Using fallback offset: ${fallbackOffset}s`);
+    return fallbackOffset;
 }
 
 /**
  * Get current time offset
  */
 function getTimeOffset() {
-    return config?.timeOffset || 362;
+    if (config?.timeOffset !== undefined) {
+        return config.timeOffset;
+    }
+    
+    // If no config offset, calculate smart default
+    return calculateSmartDefaultOffset();
 }
 
 /**
@@ -495,11 +787,30 @@ function getChatUrl(videoId) {
  * Check if the current video is a Lekker Spelen video
  */
 function isLekkerSpelen() {
-    // Check if we have chat data for this video (from yt-ttv.json mapping)
+    // First check if we have chat data for this video (from yt-ttv.json or manual link)
     const urlParams = new URLSearchParams(window.location.search);
     const videoId = urlParams.get("v");
 
-    return videoId && ttvLink && ttvLink[videoId]
+    if (videoId && ttvLink && ttvLink[videoId]) {
+        return true; // We have chat data for this video (either mapped or manually linked)
+    }
+
+    // Check channel name for Lekker Spelen (more reliable than title)
+    const channelElement = document.querySelector('#channel-name a, .ytd-channel-name a, ytd-video-owner-renderer a');
+    const channelName = channelElement ? channelElement.textContent.toLowerCase().trim() : '';
+
+    const lekkerIndicators = [
+        'lekker spelen',
+        'lekker-spelen',
+        'lekkerspelen'
+    ];
+
+    // Only check channel name, not title (title can have false positives)
+    const isLekkerChannel = lekkerIndicators.some(indicator =>
+        channelName.includes(indicator)
+    );
+
+    return isLekkerChannel;
 }
 
 /**
@@ -531,12 +842,99 @@ function handleMessage(request, sender, sendResponse) {
             break;
 
         case 'getStatus':
+            const lekkerSpelen = isLekkerSpelen();
             sendResponse({
                 status: isActive,
-                message: isActive ? 'Chat synchronized' : 'Not synchronized',
+                message: isActive ? 'Chat gesynchroniseerd' : 
+                        (isManualLinkMode ? 'Wacht op Twitch VOD link' :
+                        (lekkerSpelen ? 'Chat niet gesynchroniseerd' : 'Geen Lekker Spelen video')),
+                isLekkerSpelen: lekkerSpelen,
+                isManualLinkMode: isManualLinkMode,
+                pendingVideoId: pendingVideoId,
                 config: config
             });
             break;
+
+        case 'linkTwitchVOD':
+            const youtubeVideoId = request.youtubeVideoId || pendingVideoId;
+            const twitchVodId = request.twitchVodId;
+            
+            if (!youtubeVideoId) {
+                sendResponse({ success: false, error: 'No YouTube video ID provided' });
+                break;
+            }
+            
+            if (!twitchVodId) {
+                sendResponse({ success: false, error: 'No Twitch VOD ID provided' });
+                break;
+            }
+            
+            // Temporarily add to mapping
+            if (!ttvLink) ttvLink = {};
+            ttvLink[youtubeVideoId] = twitchVodId;
+            
+            // Save to local storage for future visits
+            (async () => {
+                try {
+                    const stored = await browserAPI.storage.local.get({ manualLinks: {} });
+                    const manualLinks = stored.manualLinks || {};
+                    manualLinks[youtubeVideoId] = twitchVodId;
+                    await browserAPI.storage.local.set({ manualLinks: manualLinks });
+                    console.log('Saved manual link to storage:', youtubeVideoId, '->', twitchVodId);
+                    
+                    // Reset mode flags if they were set
+                    if (isManualLinkMode && pendingVideoId === youtubeVideoId) {
+                        isManualLinkMode = false;
+                        pendingVideoId = null;
+                    }
+                    
+                    // Reinitialize with the new mapping
+                    await init();
+                    sendResponse({ success: true, message: 'Chat linked successfully', videoId: youtubeVideoId });
+                } catch (error) {
+                    sendResponse({ success: false, error: error.message });
+                }
+            })();
+            
+            return true; // Async response
+
+        case 'removeManualLink':
+            const videoIdToRemove = request.youtubeVideoId;
+            
+            if (!videoIdToRemove) {
+                sendResponse({ success: false, error: 'No YouTube video ID provided' });
+                break;
+            }
+            
+            // Remove from storage
+            (async () => {
+                try {
+                    const stored = await browserAPI.storage.local.get({ manualLinks: {} });
+                    const manualLinks = stored.manualLinks || {};
+                    
+                    if (manualLinks[videoIdToRemove]) {
+                        delete manualLinks[videoIdToRemove];
+                        await browserAPI.storage.local.set({ manualLinks: manualLinks });
+                        console.log('Removed manual link from storage:', videoIdToRemove);
+                        
+                        // Remove from current mapping
+                        if (ttvLink && ttvLink[videoIdToRemove]) {
+                            delete ttvLink[videoIdToRemove];
+                        }
+                        
+                        // Clean up and restore YouTube chat
+                        cleanup();
+                        
+                        sendResponse({ success: true, message: 'Manual link removed successfully' });
+                    } else {
+                        sendResponse({ success: false, error: 'No manual link found for this video' });
+                    }
+                } catch (error) {
+                    sendResponse({ success: false, error: error.message });
+                }
+            })();
+            
+            return true; // Async response
 
         case 'getCurrentTime':
             if (video) {
@@ -578,26 +976,10 @@ function refreshChatWithNewOffset() {
     showPreviousMessages(currentSecond);
 }
 
-// Track whether we found manual offset data
-let hasManualOffsetData = false;
-
-/**
- * Check if manual offset data was loaded from GitHub
- * @param {string} videoId - YouTube video ID
- * @returns {boolean} True if manual offset was found and applied
- */
-function checkForManualOffset(videoId) {
-    return hasManualOffsetData;
-}
-
 /**
  * Load offset data from GitHub and apply to config
- * @param {string} videoId - YouTube video ID
- * @returns {Promise<boolean>} True if manual offset was found and applied
  */
 async function loadAndApplyOffsetData(videoId) {
-    hasManualOffsetData = false;
-
     try {
         console.log('Loading offset data from GitHub for video:', videoId);
 
@@ -614,7 +996,7 @@ async function loadAndApplyOffsetData(videoId) {
 
             if (offsetData && offsetData[videoId]) {
                 const suggestedOffset = offsetData[videoId];
-                console.log('Found manual offset for this video:', suggestedOffset, 'seconds');
+                console.log('Found suggested offset for this video:', suggestedOffset, 'seconds');
 
                 // Update config with suggested offset
                 if (!config) {
@@ -625,11 +1007,9 @@ async function loadAndApplyOffsetData(videoId) {
                 // Also save to storage so popup shows the correct value
                 await browserAPI.storage.local.set({ timeOffset: suggestedOffset });
 
-                hasManualOffsetData = true;
-                console.log('Applied manual offset:', suggestedOffset);
-                return true;
+                console.log('Applied suggested offset:', suggestedOffset);
             } else {
-                console.log('No manual offset data found for this video');
+                console.log('No offset data found for this video');
             }
         } else {
             console.log('GitHub offset data returned status:', response.status);
@@ -637,8 +1017,6 @@ async function loadAndApplyOffsetData(videoId) {
     } catch (error) {
         console.log('Could not load offset data from GitHub:', error.message);
     }
-
-    return false;
 }
 
 /**
@@ -648,7 +1026,12 @@ const init = async () => {
     try {
         console.log('Initializing Twitch chat sync...');
 
-        // Load YouTube to Twitch video mapping
+        // Initialize config first if not already done
+        if (!config) {
+            await initConfig();
+        }
+
+        // Load YouTube to Twitch video mapping first
         if (!ttvLink) {
             const ttvLinkResponse = await fetch(browserAPI.getURL("data/yt-ttv.json"));
             if (!ttvLinkResponse.ok) {
@@ -657,13 +1040,38 @@ const init = async () => {
             ttvLink = await ttvLinkResponse.json();
         }
 
+        // Check for manual links in storage
+        const stored = await browserAPI.storage.local.get({ manualLinks: {} });
+        if (stored.manualLinks) {
+            // Merge manual links into ttvLink
+            ttvLink = { ...ttvLink, ...stored.manualLinks };
+            console.log('Loaded manual links from storage');
+        }
+
         // Get current YouTube video ID
         const urlParams = new URLSearchParams(window.location.search);
         const videoId = urlParams.get("v");
 
+        // Check if it's a Lekker Spelen video (now ttvLink is loaded)
+        const lekkerSpelen = isLekkerSpelen();
+        console.log('Is Lekker Spelen video:', lekkerSpelen);
+
+        if (!lekkerSpelen) {
+            console.log('Not a Lekker Spelen video - keeping original YouTube chat');
+            isActive = false;
+            return;
+        }
+
         if (!videoId || !ttvLink[videoId]) {
             console.log(`No Twitch chat data available for video ID: ${videoId || 'none'}`);
-            cleanup();
+            
+            // Enable manual link mode
+            isManualLinkMode = true;
+            pendingVideoId = videoId;
+            isActive = false;
+            
+            // Don't cleanup - leave YouTube chat intact
+            console.log('Manual link mode enabled - waiting for user to link Twitch VOD');
             return;
         }
 
@@ -681,59 +1089,90 @@ const init = async () => {
             imageData = await imageResponse.json();
         }
 
-        // Load chat data
+        // Load chat data via background script (to bypass CORS)
         const chatUrl = getChatUrl(ttvLink[videoId]);
-        const chatResponse = await fetch(chatUrl);
-        if (!chatResponse.ok) {
-            throw new Error(`Failed to load chat data from ${chatUrl}`);
+        console.log('Fetching chat data from:', chatUrl);
+        
+        const chatResponse = await chrome.runtime.sendMessage({
+            action: 'fetchChatData',
+            url: chatUrl
+        });
+        
+        if (!chatResponse.success) {
+            throw new Error(`Failed to load chat data from ${chatUrl}: ${chatResponse.error}`);
         }
-        chatData = await chatResponse.json();
+        
+        chatData = chatResponse.data;
 
         console.log(`Loaded chat data with ${chatData.comments?.length || 0} messages`);
 
-        // Calculate auto offset if no manual offset was found in GitHub data
-        const video = await getVideoElement();
-        if (video && video.duration && chatData.comments && chatData.comments.length > 0) {
-            const videoDuration = Math.floor(video.duration);
-
-            // Check if we already have a manual offset from GitHub data
-            const hasManualOffset = await checkForManualOffset(videoId);
-
-            if (!hasManualOffset) {
-                const autoOffset = calculateAutoOffset(videoDuration, chatData.comments);
-
-                // Update config with auto-calculated offset
-                config.timeOffset = autoOffset;
-
-                // Save to storage so popup shows the correct value
-                await browserAPI.storage.local.set({ timeOffset: autoOffset });
-
-                console.log('Applied auto-calculated offset:', autoOffset);
-            }
+        // Only proceed with injection if we have valid chat data
+        if (!chatData || !chatData.comments || chatData.comments.length === 0) {
+            console.log('No valid chat data to display');
+            isActive = false;
+            return;
         }
 
-        // Initialize UI and video sync
+        // Initialize UI and video sync - chat will only inject if conditions are met
+        console.log('About to wait for chat container...');
         await waitForChatContainer();
+        console.log('Chat container ready, setting up video sync...');
         await onVideoReady();
 
         isActive = true;
         console.log('Twitch chat sync initialized successfully');
     } catch (error) {
         console.error('Failed to initialize Twitch chat sync:', error);
+        console.error('Error stack:', error.stack);
+        isActive = false;
     }
 };
 
 /**
  * Clean up intervals and reset state
  */
+/**
+ * Clean up intervals and reset state
+ */
 function cleanup() {
+    console.log('Cleaning up extension state...');
+    
     if (shownMessages) {
         shownMessages.clear();
     }
 
-    if (messageList) {
-        messageList.innerHTML = "";
+    // Remove the active class
+    const chatContainerParent = document.querySelector("#chat-container");
+    if (chatContainerParent) {
+        chatContainerParent.classList.remove("lekker-chat-active");
     }
+
+    // Restore original YouTube chat if we saved it
+    if (messageList && messageList.parentNode) {
+        const chatContainer = messageList.parentNode;
+        try {
+            if (originalChatContent) {
+                chatContainer.innerHTML = originalChatContent;
+                console.log('Restored original YouTube chat');
+                originalChatContent = null;
+            } else {
+                messageList.remove();
+                console.log('Removed injected message list');
+            }
+        } catch (e) {
+            console.error('Error restoring chat:', e);
+        }
+        messageList = null;
+    }
+    
+    // Clean up chat header
+    if (chatHeader && chatHeader.parentNode) {
+        chatHeader.remove();
+        chatHeader = null;
+    }
+    
+    // Reset collapse state
+    isChatCollapsed = false;
 
     if (videoInterval) {
         clearInterval(videoInterval);
@@ -743,6 +1182,10 @@ function cleanup() {
     lastSecond = -1;
     video = null;
     isActive = false;
+    chatData = null;
+    
+    // Don't reset manual link mode during cleanup
+    // It should persist until a link is provided or page changes
 }
 
 // Set up message listener
@@ -751,6 +1194,33 @@ if (typeof chrome !== 'undefined' && chrome.runtime) {
 } else if (typeof browser !== 'undefined' && browser.runtime) {
     browser.runtime.onMessage.addListener(handleMessage);
 }
+
+// Handle fullscreen changes
+document.addEventListener('fullscreenchange', () => {
+    console.log('Fullscreen state changed');
+    if (!document.fullscreenElement) {
+        // Exited fullscreen - scroll to bottom after a short delay
+        setTimeout(() => {
+            if (messageList && isActive) {
+                console.log('Scrolling to bottom after exiting fullscreen');
+                scrollToBottom();
+            }
+        }, 500);
+    }
+});
+
+// Also handle webkit fullscreen (Safari)
+document.addEventListener('webkitfullscreenchange', () => {
+    console.log('Webkit fullscreen state changed');
+    if (!document.webkitFullscreenElement) {
+        setTimeout(() => {
+            if (messageList && isActive) {
+                console.log('Scrolling to bottom after exiting webkit fullscreen');
+                scrollToBottom();
+            }
+        }, 500);
+    }
+});
 
 // Initialize the extension
 (async () => {
@@ -762,12 +1232,18 @@ if (typeof chrome !== 'undefined' && chrome.runtime) {
 })();
 
 // Monitor URL changes for YouTube navigation
+// Monitor URL changes for YouTube navigation
 let lastUrl = location.href;
 setInterval(async () => {
     if (location.href !== lastUrl) {
         console.log('URL changed, reinitializing...');
+        const wasActive = isActive;
         lastUrl = location.href;
-        cleanup();
+        
+        // Only cleanup if we were previously active
+        if (wasActive) {
+            cleanup();
+        }
 
         if (config?.enableSync !== false) {
             await init();

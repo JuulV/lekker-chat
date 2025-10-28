@@ -50,11 +50,17 @@ echo "✓ Firefox addon built in dist/firefox/"
 
 # Create zip files for distribution (zip contents directly, not folders)
 cd dist/chrome
-zip -r "../lekkerchat-chrome.zip" .
+zip -r "../twitch-chat-sync-chrome.zip" .
 cd ../firefox
-zip -r "../lekkerchat-firefox.zip" .
+zip -r "../twitch-chat-sync-firefox.zip" .
 cd ../..
 
 echo "✓ Distribution packages created:"
-echo "  - dist/lekkerchat-chrome.zip"
-echo "  - dist/lekkerchat-firefox.zip"
+echo "  - dist/twitch-chat-sync-chrome.zip"
+echo "  - dist/twitch-chat-sync-firefox.zip"
+
+echo ""
+echo "Next steps:"
+echo "1. Add icon files to icons/ directories"
+echo "2. Test both extensions in their respective browsers"
+echo "3. Submit to Chrome Web Store and Firefox Add-ons"

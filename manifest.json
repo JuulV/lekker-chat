@@ -1,16 +1,21 @@
 {
-    "manifest_version": 2,
+    "manifest_version": 3,
     "name": "LekkerChat",
     "version": "1.0.0",
     "description": "Synchronizes archived Twitch chat with YouTube VODs for Lekker Spelen streams.",
     "permissions": [
         "storage",
-        "activeTab",
+        "activeTab"
+    ],
+    "host_permissions": [
         "https://www.youtube.com/*",
         "https://lekkerspeuren.nl/*",
         "https://raw.githubusercontent.com/*",
         "https://github.com/*"
     ],
+    "background": {
+        "service_worker": "background.js"
+    },
     "content_scripts": [
         {
             "matches": [
@@ -26,11 +31,18 @@
         }
     ],
     "web_accessible_resources": [
-        "fonts/*.woff2",
-        "data/yt-ttv.json",
-        "data/image_ids.json"
+        {
+            "resources": [
+                "fonts/*.woff2",
+                "data/yt-ttv.json",
+                "data/image_ids.json"
+            ],
+            "matches": [
+                "*://www.youtube.com/*"
+            ]
+        }
     ],
-    "browser_action": {
+    "action": {
         "default_popup": "popup/popup.html",
         "default_title": "LekkerChat"
     },
